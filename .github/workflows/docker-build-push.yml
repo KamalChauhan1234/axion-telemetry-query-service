@@ -1,13 +1,19 @@
-name: axion-ui-ci
+name: axion-telemetry-ci
 
 on:
   push:
     branches: [ main ]
+    paths-ignore:
+      - 'manifest/**'      # manifest commit se CI dobara na chale
   workflow_dispatch:
 
 permissions:
-  id-token: write   # OIDC ke liye zaroori
-  contents: read
+  id-token: write          # Azure OIDC ke liye
+  contents: write          # manifest commit push karne ke liye
+
+concurrency:
+  group: axion-telemetry-ci
+  cancel-in-progress: false
 
 jobs:
   build-and-push:
@@ -29,10 +35,24 @@ jobs:
         run: az acr login --name ${{ vars.ACR_NAME }}
 
       - name: Docker build
-        run: |
-          docker build -t $IMAGE:${{ github.sha }} -t $IMAGE:latest .
+        run: docker build -t $IMAGE:${{ github.sha }} .
 
       - name: Docker push
+        run: docker push $IMAGE:${{ github.sha }}
+
+      - name: Install kustomize
         run: |
-          docker push $IMAGE:${{ github.sha }}
-          docker push $IMAGE:latest
+          if ! command -v kustomize >/dev/null 2>&1; then
+            curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+            sudo mv kustomize /usr/local/bin/
+          fi
+
+      - name: Update image tag in kustomization
+        working-directory: manifest
+        run: |
+          kustomize edit set image $IMAGE=$IMAGE:${{ github.sha }}
+          git config user.name  "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add kustomization.yaml
+          git commit -m "ci: telemetry image -> ${{ github.sha }}" || echo "No changes"
+          for i in 1 2 3; do git pull --rebase origin main && git push && break || sleep 3; done
