@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telemetry-deployment
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: telemetry-deployment
+  template:
+    metadata:
+      labels:
+        app: telemetry-deployment
+    spec:
+      containers:
+      - name: tele-con
+        image: acrdevtodoacr.azurecr.io/telemetry
+        ports:
+        - containerPort: 8000
