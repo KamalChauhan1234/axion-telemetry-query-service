@@ -14,6 +14,8 @@ spec:
     spec:
       containers:
       - name: tele-con
-        image: acrdevtodoacr.azurecr.io/telemetry
+        image: acrdevtodoacr.azurecr.io/telemetry:CI_IMAGE_TAG
+        # ^ CI pipeline is tag ko git short-SHA se replace karega
+        #   pehli baar manually kisi valid tag se replace kar dena (jo already ACR me pushed ho)
         ports:
         - containerPort: 8000

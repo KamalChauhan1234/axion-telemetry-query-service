@@ -1,58 +1,65 @@
-name: axion-telemetry-ci
+# .github/workflows/ci.yml
+# Telemetry service - image build, ACR push, aur isi repo ke manifests/deployment.yaml
+# ka image tag update karke commit-push karega (ArgoCD isi repo ko watch kar raha hoga)
+
+name: CI - Build, Push and Update Manifest
 
 on:
   push:
-    branches: [ main ]
+    branches:
+      - main
     paths-ignore:
-      - 'manifest/**'      # manifest commit se CI dobara na chale
-  workflow_dispatch:
+      - 'manifest/**'   # important: warna CI khud ka commit dekh kar dobara trigger ho jaayega (infinite loop)
+      - '**.md'
 
-permissions:
-  id-token: write          # Azure OIDC ke liye
-  contents: write          # manifest commit push karne ke liye
-
-concurrency:
-  group: axion-telemetry-ci
-  cancel-in-progress: false
+env:
+  ACR_LOGIN_SERVER: acrdevtodoacr.azurecr.io
+  IMAGE_NAME: telemetry
+  MANIFEST_PATH: manifest/deployment.yaml   # apna actual folder-name check kar lena
 
 jobs:
-  build-and-push:
+  build-push-deploy:
     runs-on: ubuntu-latest
-    env:
-      IMAGE: ${{ vars.ACR_NAME }}.azurecr.io/${{ vars.IMAGE_NAME }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
-      - name: Azure login (OIDC)
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # taki push karte waqt full history mile
+
+      - name: Set image tag (git short SHA)
+        id: vars
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Azure Login
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: ACR login
-        run: az acr login --name ${{ vars.ACR_NAME }}
+      - name: Login to ACR
+        run: az acr login --name ${{ env.ACR_LOGIN_SERVER }}
 
-      - name: Docker build
-        run: docker build -t $IMAGE:${{ github.sha }} .
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-      - name: Docker push
-        run: docker push $IMAGE:${{ github.sha }}
+      - name: Build and Push Image to ACR
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}
+            ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest
 
-      - name: Install kustomize
+      - name: Update image tag in deployment.yaml
         run: |
-          if ! command -v kustomize >/dev/null 2>&1; then
-            curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
-            sudo mv kustomize /usr/local/bin/
-          fi
+          sed -i "s|image: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:.*|image: ${{ env.ACR_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.image_tag }}|" ${{ env.MANIFEST_PATH }}
+          cat ${{ env.MANIFEST_PATH }}
 
-      - name: Update image tag in kustomization
-        working-directory: manifest
+      - name: Commit and push updated manifest
         run: |
-          kustomize edit set image $IMAGE=$IMAGE:${{ github.sha }}
-          git config user.name  "github-actions"
-          git config user.email "github-actions@users.noreply.github.com"
-          git add kustomization.yaml
-          git commit -m "ci: telemetry image -> ${{ github.sha }}" || echo "No changes"
-          for i in 1 2 3; do git pull --rebase origin main && git push && break || sleep 3; done
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ env.MANIFEST_PATH }}
+          git diff --cached --quiet && echo "No changes to commit" || git commit -m "chore: update telemetry image to ${{ steps.vars.outputs.image_tag }} [skip ci]"
+          git push
